@@ -110,6 +110,8 @@ pub enum Error {
 	WriteError,
 	/// Too many sockets given
 	TooManySockets,
+	/// Converting an IP address to a hostname is not supported
+	IPAddrToHostNameUnsupported,
 }
 
 /// We need to wrap our heap so it's creatable at run-time and accessible from an ISR.
