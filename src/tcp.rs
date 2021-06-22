@@ -264,26 +264,68 @@ impl embedded_nal::TcpClientStack for TcpClient {
     }
 }
 
-impl embedded_nal::Dns for TcpClient {
+/// The iterator returned by `embedded-nal::Dns::get_hosts_by_name`.
+pub struct IpAddrIter {
+	record: Option<&'static sys::nrf_addrinfo>,
+	output_ptr: *mut sys::nrf_addrinfo,
+}
+
+impl Iterator for IpAddrIter {
+    type Item = IpAddr;
+
+    fn next(&mut self) -> Option<Self::Item> {
+		if let Some(record) = self.record.take() {
+			let addr = match record.ai_family as u32 {
+				sys::NRF_AF_INET => {
+					let dns_addr: &sys::nrf_sockaddr_in = unsafe { &*(record.ai_addr as *const _) };
+
+					embedded_nal::IpAddr::V4(dns_addr.sin_addr.s_addr.into())
+				},
+				sys::NRF_AF_INET6 => {
+					let dns_addr: &sys::nrf_sockaddr_in6 = unsafe { &*(record.ai_addr as *const _) };
+
+					embedded_nal::IpAddr::V6(dns_addr.sin6_addr.s6_addr.into())
+				},
+				_ => unimplemented!(),
+			};
+
+			if !record.ai_next.is_null() {
+				self.record = Some(unsafe { &*record.ai_next });
+			}
+
+			Some(addr)
+		} else {
+			None
+		}
+    }
+}
+
+impl Drop for IpAddrIter {
+    fn drop(&mut self) {
+        unsafe {
+			sys::nrf_freeaddrinfo(self.output_ptr);
+		}
+    }
+}
+
+impl<'a> embedded_nal::Dns<'a> for TcpClient {
     type Error = Error;
+	type IpAddrIter = IpAddrIter;
 
 	/// # Usage:
 	/// ```rust, norun
 	/// let mut client = TcpClient::default();
-	/// const UNINIT: MaybeUninit<IpAddr> = MaybeUninit::uninit();
-	/// let mut buf = [UNINIT; 8];
 	/// 
-	/// let addresses = client.get_hosts_by_name("google.com", AddrType::IPv6, &mut buf)?;
+	/// let addresses = client.get_hosts_by_name("google.com", AddrType::IPv6)?;
 	/// for addr in addresses {
 	///		println!("{:?", addr);
 	/// }
 	/// ```
-    fn get_hosts_by_name<'a>(
-		&mut self,
-		hostname: &str,
+    fn get_hosts_by_name(
+		&'a mut self,
+		hostname: &'a str,
 		addr_type: embedded_nal::AddrType,
-		outputs: &'a mut [MaybeUninit<IpAddr>],
-	) -> Result<&'a [IpAddr], Self::Error> {
+	) -> Result<IpAddrIter, Self::Error> {
 		use core::fmt::Write;
 
 		// Hostnames can be a maximum of 244 characters.
@@ -320,38 +362,12 @@ impl embedded_nal::Dns for TcpClient {
 		};
 
 		if (result == 0) && (!output_ptr.is_null()) {
-			let mut record: &sys::nrf_addrinfo = unsafe { &*output_ptr };
-			let mut count = 0;
+			let record: &sys::nrf_addrinfo = unsafe { &*output_ptr };
 
-			for addr_in in outputs.iter_mut() {
-				let addr = match record.ai_family as u32 {
-					sys::NRF_AF_INET => {
-						let dns_addr: &sys::nrf_sockaddr_in = unsafe { &*(record.ai_addr as *const _) };
-
-						embedded_nal::IpAddr::V4(dns_addr.sin_addr.s_addr.into())
-					},
-					sys::NRF_AF_INET6 => {
-						let dns_addr: &sys::nrf_sockaddr_in6 = unsafe { &*(record.ai_addr as *const _) };
-	
-						embedded_nal::IpAddr::V6(dns_addr.sin6_addr.s6_addr.into())
-					},
-					_ => Err(Error::UnrecognisedValue)?,
-				};
-				*addr_in = MaybeUninit::new(addr);
-				count += 1;
-
-				if !record.ai_next.is_null() {
-					record = unsafe { &*record.ai_next };
-				} else {
-					break;
-				}
-			}
-
-			unsafe {
-				sys::nrf_freeaddrinfo(output_ptr);
-			}
-
-			Ok(unsafe { &*(&outputs[..count] as *const _ as *const [IpAddr])})
+			Ok(IpAddrIter {
+				record: Some(record),
+				output_ptr,
+			})
 		} else {
 			Err(Error::Nordic("dns_resolve", result, get_last_error()))
 		}
