@@ -43,6 +43,8 @@ mod raw;
 pub mod tcp;
 pub mod tls;
 pub mod udp;
+pub mod nal;
+pub mod dns;
 
 //******************************************************************************
 // Imports

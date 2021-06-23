@@ -17,11 +17,9 @@
 // Imports
 //******************************************************************************
 
-use core::mem::MaybeUninit;
-
 use super::{get_last_error, Error};
-use crate::raw::*;
-use embedded_nal::IpAddr;
+use crate::{nal::Stack, raw::*};
+use embedded_nal::{Dns, IpAddr, SocketAddr, TcpClientStack};
 use log::debug;
 use nrfxlib_sys as sys;
 
@@ -65,8 +63,8 @@ pub struct TcpSocket {
 
 impl TcpSocket {
 	/// Create a new TCP socket.
-	pub fn new() -> Result<TcpSocket, Error> {
-		let socket = Socket::new(SocketDomain::Inet, SocketType::Stream, SocketProtocol::Tcp)?;
+	pub fn new(domain: SocketDomain) -> Result<TcpSocket, Error> {
+		let socket = Socket::new(domain, SocketType::Stream, SocketProtocol::Tcp)?;
 
 		// Now configure this socket
 
@@ -75,79 +73,91 @@ impl TcpSocket {
 
 	/// Look up the hostname and for each result returned, try to connect to
 	/// it.
-	pub fn connect(&self, hostname: &str, port: u16) -> Result<(), Error> {
-		use core::fmt::Write;
-
+	pub fn connect_with_hostname(&mut self, hostname: &str, port: u16) -> Result<(), Error> {
 		debug!("Connecting via TCP to {}:{}", hostname, port);
 
-		// Now, make a null-terminated hostname
-		let mut hostname_smallstring: heapless::String<64> = heapless::String::new();
-		write!(hostname_smallstring, "{}\0", hostname).map_err(|_| Error::HostnameTooLong)?;
-		// Now call getaddrinfo with some hints
-		let hints = sys::nrf_addrinfo {
-			ai_flags: 0,
-			ai_family: sys::NRF_AF_INET as i32,
-			ai_socktype: sys::NRF_SOCK_STREAM as i32,
-			ai_protocol: 0,
-			ai_addrlen: 0,
-			ai_addr: core::ptr::null_mut(),
-			ai_canonname: core::ptr::null_mut(),
-			ai_next: core::ptr::null_mut(),
-		};
-		let mut output_ptr: *mut sys::nrf_addrinfo = core::ptr::null_mut();
-		let mut result = unsafe {
-			sys::nrf_getaddrinfo(
-				// hostname
-				hostname_smallstring.as_ptr(),
-				// service
-				core::ptr::null(),
-				// hints
-				&hints,
-				// output pointer
-				&mut output_ptr,
-			)
-		};
-		if (result == 0) && (!output_ptr.is_null()) {
-			let mut record: &sys::nrf_addrinfo = unsafe { &*output_ptr };
-			loop {
-				let dns_addr: &sys::nrf_sockaddr_in =
-					unsafe { &*(record.ai_addr as *const sys::nrf_sockaddr_in) };
-				// Create a new sockaddr_in with the right port
-				let connect_addr = sys::nrf_sockaddr_in {
-					sin_len: core::mem::size_of::<sys::nrf_sockaddr_in>() as u8,
-					sin_family: sys::NRF_AF_INET as i32,
-					sin_port: htons(port),
-					sin_addr: dns_addr.sin_addr,
-				};
+		let mut stack = Stack::default();
+		let mut socket = stack.socket()?;
 
-				debug!("Trying IP address {}", &crate::NrfSockAddrIn(connect_addr));
-
-				// try and connect to this result
-				result = unsafe {
-					sys::nrf_connect(
-						self.socket.fd,
-						&connect_addr as *const sys::nrf_sockaddr_in as *const _,
-						connect_addr.sin_len as u32,
-					)
-				};
-				if result == 0 {
-					break;
+		for ip_addr in stack.get_hosts_by_name::<8>(hostname, embedded_nal::AddrType::IPv4)? {
+			match ip_addr {
+				IpAddr::V4(_) => {
+					stack.connect(&mut socket, SocketAddr::new(ip_addr, port));
 				}
-				if !record.ai_next.is_null() {
-					record = unsafe { &*record.ai_next };
-				} else {
-					break;
-				}
-			}
-			unsafe {
-				sys::nrf_freeaddrinfo(output_ptr);
+				IpAddr::V6(_) => unimplemented!(),
 			}
 		}
-		if result != 0 {
-			Err(Error::Nordic("tcp_connect", result, get_last_error()))
-		} else {
-			Ok(())
-		}
+
+		Ok(())
+
+		// // Now, make a null-terminated hostname
+		// let mut hostname_smallstring: heapless::String<64> = heapless::String::new();
+		// write!(hostname_smallstring, "{}\0", hostname).map_err(|_| Error::HostnameTooLong)?;
+		// // Now call getaddrinfo with some hints
+		// let hints = sys::nrf_addrinfo {
+		// 	ai_flags: 0,
+		// 	ai_family: sys::NRF_AF_INET as i32,
+		// 	ai_socktype: sys::NRF_SOCK_STREAM as i32,
+		// 	ai_protocol: 0,
+		// 	ai_addrlen: 0,
+		// 	ai_addr: core::ptr::null_mut(),
+		// 	ai_canonname: core::ptr::null_mut(),
+		// 	ai_next: core::ptr::null_mut(),
+		// };
+		// let mut output_ptr: *mut sys::nrf_addrinfo = core::ptr::null_mut();
+		// let mut result = unsafe {
+		// 	sys::nrf_getaddrinfo(
+		// 		// hostname
+		// 		hostname_smallstring.as_ptr(),
+		// 		// service
+		// 		core::ptr::null(),
+		// 		// hints
+		// 		&hints,
+		// 		// output pointer
+		// 		&mut output_ptr,
+		// 	)
+		// };
+		// if (result == 0) && (!output_ptr.is_null()) {
+		// 	let mut record: &sys::nrf_addrinfo = unsafe { &*output_ptr };
+		// 	loop {
+		// 		let dns_addr: &sys::nrf_sockaddr_in =
+		// 			unsafe { &*(record.ai_addr as *const sys::nrf_sockaddr_in) };
+		// 		// Create a new sockaddr_in with the right port
+		// 		let connect_addr = sys::nrf_sockaddr_in {
+		// 			sin_len: core::mem::size_of::<sys::nrf_sockaddr_in>() as u8,
+		// 			sin_family: sys::NRF_AF_INET as i32,
+		// 			sin_port: htons(port),
+		// 			sin_addr: dns_addr.sin_addr,
+		// 		};
+
+		// 		debug!("Trying IP address {}", &crate::NrfSockAddrIn(connect_addr));
+
+		// 		// try and connect to this result
+		// 		result = unsafe {
+		// 			sys::nrf_connect(
+		// 				self.socket.fd,
+		// 				&connect_addr as *const sys::nrf_sockaddr_in as *const _,
+		// 				connect_addr.sin_len as u32,
+		// 			)
+		// 		};
+		// 		if result == 0 {
+		// 			break;
+		// 		}
+		// 		if !record.ai_next.is_null() {
+		// 			record = unsafe { &*record.ai_next };
+		// 		} else {
+		// 			break;
+		// 		}
+		// 	}
+		// 	unsafe {
+		// 		sys::nrf_freeaddrinfo(output_ptr);
+		// 	}
+		// }
+		// if result != 0 {
+		// 	Err(Error::Nordic("tcp_connect", result, get_last_error()))
+		// } else {
+		// 	Ok(())
+		// }
 	}
 }
 
@@ -171,18 +181,12 @@ impl core::ops::Deref for TcpSocket {
 	}
 }
 
-/// Struct used to implement embedded-nal traits.
-#[derive(Default)]
-pub struct TcpClient {
-	_private: (),
-}
-
-impl embedded_nal::TcpClientStack for TcpClient {
-	type TcpSocket = TcpSocket;
+impl embedded_nal::TcpClientStack for Stack {
+	type TcpSocket = Option<TcpSocket>;
 	type Error = Error;
 
 	fn socket(&mut self) -> Result<Self::TcpSocket, Self::Error> {
-        TcpSocket::new()
+        None
     }
 
 	fn connect(
@@ -261,120 +265,6 @@ impl embedded_nal::TcpClientStack for TcpClient {
 	fn close(&mut self, socket: TcpSocket) -> Result<(), Self::Error> {
         drop(socket);
 		Ok(())
-    }
-}
-
-/// The iterator returned by `embedded-nal::Dns::get_hosts_by_name`.
-pub struct IpAddrIter {
-	record: Option<&'static sys::nrf_addrinfo>,
-	output_ptr: *mut sys::nrf_addrinfo,
-}
-
-impl Iterator for IpAddrIter {
-    type Item = IpAddr;
-
-    fn next(&mut self) -> Option<Self::Item> {
-		if let Some(record) = self.record.take() {
-			let addr = match record.ai_family as u32 {
-				sys::NRF_AF_INET => {
-					let dns_addr: &sys::nrf_sockaddr_in = unsafe { &*(record.ai_addr as *const _) };
-
-					embedded_nal::IpAddr::V4(dns_addr.sin_addr.s_addr.into())
-				},
-				sys::NRF_AF_INET6 => {
-					let dns_addr: &sys::nrf_sockaddr_in6 = unsafe { &*(record.ai_addr as *const _) };
-
-					embedded_nal::IpAddr::V6(dns_addr.sin6_addr.s6_addr.into())
-				},
-				_ => unimplemented!(),
-			};
-
-			if !record.ai_next.is_null() {
-				self.record = Some(unsafe { &*record.ai_next });
-			}
-
-			Some(addr)
-		} else {
-			None
-		}
-    }
-}
-
-impl Drop for IpAddrIter {
-    fn drop(&mut self) {
-        unsafe {
-			sys::nrf_freeaddrinfo(self.output_ptr);
-		}
-    }
-}
-
-impl<'a> embedded_nal::Dns<'a> for TcpClient {
-    type Error = Error;
-	type IpAddrIter = IpAddrIter;
-
-	/// # Usage:
-	/// ```rust, norun
-	/// let mut client = TcpClient::default();
-	/// 
-	/// let addresses = client.get_hosts_by_name("google.com", AddrType::IPv6)?;
-	/// for addr in addresses {
-	///		println!("{:?", addr);
-	/// }
-	/// ```
-    fn get_hosts_by_name(
-		&'a mut self,
-		hostname: &'a str,
-		addr_type: embedded_nal::AddrType,
-	) -> Result<IpAddrIter, Self::Error> {
-		use core::fmt::Write;
-
-		// Hostnames can be a maximum of 244 characters.
-		let mut hostname_smallstring: heapless::String<255> = heapless::String::new();
-		write!(hostname_smallstring, "{}\0", hostname).map_err(|_| Error::HostnameTooLong)?;
-
-		// Now call getaddrinfo with some hints
-		let hints = sys::nrf_addrinfo {
-			ai_flags: 0,
-			ai_family: match addr_type {
-				embedded_nal::AddrType::IPv4 => sys::NRF_AF_INET as i32,
-				embedded_nal::AddrType::IPv6 => sys::NRF_AF_INET6 as i32,
-				embedded_nal::AddrType::Either => 0,
-			},
-			ai_socktype: sys::NRF_SOCK_STREAM as i32,
-			ai_protocol: 0,
-			ai_addrlen: 0,
-			ai_addr: core::ptr::null_mut(),
-			ai_canonname: core::ptr::null_mut(),
-			ai_next: core::ptr::null_mut(),
-		};
-		let mut output_ptr: *mut sys::nrf_addrinfo = core::ptr::null_mut();
-		let result = unsafe {
-			sys::nrf_getaddrinfo(
-				// hostname
-				hostname_smallstring.as_ptr(),
-				// service
-				core::ptr::null(),
-				// hints
-				&hints,
-				// output pointer
-				&mut output_ptr,
-			)
-		};
-
-		if (result == 0) && (!output_ptr.is_null()) {
-			let record: &sys::nrf_addrinfo = unsafe { &*output_ptr };
-
-			Ok(IpAddrIter {
-				record: Some(record),
-				output_ptr,
-			})
-		} else {
-			Err(Error::Nordic("dns_resolve", result, get_last_error()))
-		}
-    }
-
-    fn get_host_by_address(&mut self, _addr: embedded_nal::IpAddr) -> Result<heapless::String<256>, Self::Error> {
-        Err(Error::IPAddrToHostNameUnsupported)
     }
 }
 

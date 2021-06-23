@@ -64,6 +64,8 @@ pub(crate) enum SocketDomain {
 	Lte,
 	/// Corresponds to NRF_AF_INET. Used for IPv4 sockets.
 	Inet,
+	/// Corresponds to NRF_AF_INET6. Used for IPv6 sockets.
+	Inet6,
 	/// Corresponds to NRF_AF_LOCAL. Used for talking to the Nordic library (e.g. GNSS functions).
 	Local,
 }
@@ -313,6 +315,7 @@ impl From<SocketDomain> for i32 {
 			Local => sys::NRF_AF_LOCAL as i32,
 			Lte => sys::NRF_AF_LTE as i32,
 			Inet => sys::NRF_AF_INET as i32,
+			Inet6 => sys::NRF_AF_INET6 as i32,
 		}
 	}
 }
