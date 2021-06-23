@@ -4,8 +4,53 @@ use super::{get_last_error, Error};
 use embedded_nal::IpAddr;
 use nrfxlib_sys as sys;
 
+/// The iterator returned by `embedded-nal::Dns::get_hosts_by_name`.
+pub struct IpAddrIter {
+	record: Option<&'static sys::nrf_addrinfo>,
+	output_ptr: *mut sys::nrf_addrinfo,
+}
+
+impl Iterator for IpAddrIter {
+    type Item = IpAddr;
+
+    fn next(&mut self) -> Option<Self::Item> {
+		if let Some(record) = self.record.take() {
+			let addr = match record.ai_family as u32 {
+				sys::NRF_AF_INET => {
+					let dns_addr: &sys::nrf_sockaddr_in = unsafe { &*(record.ai_addr as *const _) };
+
+					embedded_nal::IpAddr::V4(dns_addr.sin_addr.s_addr.into())
+				},
+				sys::NRF_AF_INET6 => {
+					let dns_addr: &sys::nrf_sockaddr_in6 = unsafe { &*(record.ai_addr as *const _) };
+
+					embedded_nal::IpAddr::V6(dns_addr.sin6_addr.s6_addr.into())
+				},
+				_ => unimplemented!(),
+			};
+
+			if !record.ai_next.is_null() {
+				self.record = Some(unsafe { &*record.ai_next });
+			}
+
+			Some(addr)
+		} else {
+			None
+		}
+    }
+}
+
+impl Drop for IpAddrIter {
+    fn drop(&mut self) {
+        unsafe {
+			sys::nrf_freeaddrinfo(self.output_ptr);
+		}
+    }
+}
+
 impl embedded_nal::Dns for crate::nal::Stack {
     type Error = Error;
+	type AddrIter = IpAddrIter;
 
 	/// # Usage:
 	/// ```rust, norun
@@ -16,11 +61,11 @@ impl embedded_nal::Dns for crate::nal::Stack {
 	///		println!("{:?", addr);
 	/// }
 	/// ```
-    fn get_hosts_by_name<const UP_TO: usize>(
+    fn get_hosts_by_name(
 		&mut self,
 		hostname: &str,
 		addr_type: embedded_nal::AddrType,
-	) -> Result<heapless::Vec<IpAddr, UP_TO>, Self::Error> {
+	) -> Result<Self::AddrIter, Self::Error> {
 		use core::fmt::Write;
 
 		// Hostnames can be a maximum of 244 characters.
@@ -57,35 +102,12 @@ impl embedded_nal::Dns for crate::nal::Stack {
 		};
 
 		if (result == 0) && (!output_ptr.is_null()) {
-			let mut ret = heapless::Vec::new();
 			let mut record: &sys::nrf_addrinfo = unsafe { &*output_ptr };
 		
-			// There's always at least one item in the linked list.
-			for _ in 0..UP_TO {
-				let addr = match record.ai_family as u32 {
-					sys::NRF_AF_INET => {
-						let dns_addr: &sys::nrf_sockaddr_in = unsafe { &*(record.ai_addr as *const _) };
-
-						embedded_nal::IpAddr::V4(dns_addr.sin_addr.s_addr.into())
-					},
-					sys::NRF_AF_INET6 => {
-						let dns_addr: &sys::nrf_sockaddr_in6 = unsafe { &*(record.ai_addr as *const _) };
-
-						embedded_nal::IpAddr::V6(dns_addr.sin6_addr.s6_addr.into())
-					},
-					_ => unimplemented!(),
-				};
-
-				unsafe { ret.push_unchecked(addr); }
-
-				if record.ai_next.is_null() {
-					break;
-				} else {
-					record = unsafe { &*record.ai_next };
-				}
-			}
-
-			Ok(ret)
+			Ok(IpAddrIter {
+				record: Some(record),
+				output_ptr,
+			})
 		} else {
 			Err(Error::Nordic("dns_resolve", result, get_last_error()))
 		}

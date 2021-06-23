@@ -18,7 +18,8 @@
 //******************************************************************************
 
 use super::{get_last_error, Error};
-use crate::raw::*;
+use crate::{nal::Stack, raw::*};
+use embedded_nal::SocketAddr;
 use log::debug;
 use nrfxlib_sys as sys;
 
@@ -62,9 +63,9 @@ pub struct UdpSocket {
 
 impl UdpSocket {
 	/// Create a new TCP socket.
-	pub fn new() -> Result<UdpSocket, Error> {
+	pub fn new(domain: SocketDomain) -> Result<UdpSocket, Error> {
 		let socket = Socket::new(
-			SocketDomain::Inet,
+			domain,
 			SocketType::Datagram,
 			SocketProtocol::Udp,
 		)?;
@@ -170,6 +171,93 @@ impl core::ops::Deref for UdpSocket {
 	fn deref(&self) -> &Socket {
 		&self.socket
 	}
+}
+
+impl embedded_nal::UdpClientStack for Stack {
+	type UdpSocket = Option<UdpSocket>;
+	type Error = Error;
+
+	fn socket(&mut self) -> Result<Self::UdpSocket, Self::Error> {
+        Ok(None)
+    }
+
+	fn connect(
+		&mut self,
+		socket: &mut Self::UdpSocket,
+		remote: embedded_nal::SocketAddr,
+	) -> Result<(), Self::Error> {
+		let result = match remote {
+			embedded_nal::SocketAddr::V4(addr) => {
+				let socket = socket.insert(UdpSocket::new(SocketDomain::Inet)?);
+				
+				let sockaddr = sys::nrf_sockaddr_in {
+					sin_len: core::mem::size_of::<sys::nrf_sockaddr_in>() as u8,
+					sin_family: sys::NRF_AF_INET as i32,
+					sin_port: htons(addr.port()),
+					sin_addr: sys::nrf_in_addr {
+						s_addr: u32::from_le_bytes(addr.ip().octets()),
+					},
+				};
+
+				unsafe {
+					sys::nrf_connect(
+						socket.socket.fd,
+						&sockaddr as *const sys::nrf_sockaddr_in as *const _,
+						sockaddr.sin_len as u32,
+					)
+				}
+			}
+			embedded_nal::SocketAddr::V6(addr) => {
+				let socket = socket.insert(UdpSocket::new(SocketDomain::Inet6)?);
+
+				let sockaddr = sys::nrf_sockaddr_in6 {
+					sin6_len: core::mem::size_of::<sys::nrf_sockaddr_in>() as u8,
+					sin6_family: sys::NRF_AF_INET as i32,
+					sin6_port: htons(addr.port()),
+					sin6_addr: sys::nrf_in6_addr {
+						s6_addr: addr.ip().octets(),
+					},
+					sin6_flowinfo: 0,
+					sin6_scope_id: 0,		
+				};
+
+				unsafe {
+					sys::nrf_connect(
+						socket.socket.fd,
+						&sockaddr as *const sys::nrf_sockaddr_in6 as *const _,
+						sockaddr.sin6_len as u32,
+					)
+				}
+			},
+		};
+		
+		if result != 0 {
+			Err(Error::Nordic("udp_connect", result, get_last_error()))
+		} else {
+			Ok(())
+		}
+    }
+
+	fn send(
+		&mut self,
+		socket: &mut Self::UdpSocket,
+		buffer: &[u8],
+	) -> embedded_nal::nb::Result<(), Self::Error> {
+        todo!()
+    }
+
+	fn receive(
+		&mut self,
+		socket: &mut Self::UdpSocket,
+		buffer: &mut [u8],
+	) -> embedded_nal::nb::Result<(usize, SocketAddr), Self::Error> {
+        todo!()
+    }
+
+	fn close(&mut self, socket: Self::UdpSocket) -> Result<(), Self::Error> {
+        drop(socket);
+		Ok(())
+    }
 }
 
 //******************************************************************************

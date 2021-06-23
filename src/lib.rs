@@ -39,7 +39,7 @@ pub mod dtls;
 mod ffi;
 pub mod gnss;
 pub mod modem;
-mod raw;
+pub mod raw;
 pub mod tcp;
 pub mod tls;
 pub mod udp;

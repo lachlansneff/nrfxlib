@@ -59,7 +59,7 @@ pub(crate) enum SocketOption<'a> {
 
 /// The domain for a socket
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum SocketDomain {
+pub enum SocketDomain {
 	/// Corresponds to NRF_AF_LTE. Used for talking to the Nordic LTE modem.
 	Lte,
 	/// Corresponds to NRF_AF_INET. Used for IPv4 sockets.
